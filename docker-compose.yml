@@ -4,48 +4,44 @@ services:
   rabbitmq:
     image: rabbitmq:3-management
     ports:
-      - "5672:5672"  # AMQP protocol
-      - "15672:15672"  # RabbitMQ management web interface
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - app-network
     healthcheck:
-      test: rabbitmq-diagnostics -q ping
-      interval: 30s  # Run the healthcheck every 30 seconds
-      retries: 5  # Retry 5 times before marking as unhealthy
-      start_period: 30s  # Wait for 30 seconds before the first healthcheck
-      timeout: 30s  # Timeout for each healthcheck
+      test: [ "CMD", "rabbitmq-diagnostics", "ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  producer:
+    build: .
+    command: [ "python", "producer.py" ]
     networks:
       - app-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
-  flask-app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  consumer:
+    build: .
+    command: [ "python", "consumer.py" ]
+    networks:
+      - app-network
     ports:
-      - "5000:5000"  # Expose Flask app on port 5000
-    environment:
-      - FLASK_ENV=production
-      - RABBITMQ_HOST=rabbitmq  # Connect Flask app to RabbitMQ
+      - "5000"
     depends_on:
       rabbitmq:
-        condition: service_healthy  # Wait for RabbitMQ to be healthy before starting
-    networks:
-      - app-network
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+        condition: service_healthy
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
     deploy:
-      replicas: 3  # Deploy 3 worker replicas
-    environment:
-      - RABBITMQ_HOST=rabbitmq  # Connect worker to RabbitMQ
-    depends_on:
-      rabbitmq:
-        condition: service_healthy  # Wait for RabbitMQ to be healthy before starting
-    networks:
-    - app-network
+      replicas: 3  # Scale up consumers
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
 
 networks:
   app-network:

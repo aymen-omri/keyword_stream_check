@@ -170,51 +170,61 @@ def capture_and_transcribe_stream(ip_stream_url):
 
 # Main worker setup
 def start_consumer(keyword):
-    
     global connection
     global channel
     global KEYWORD
-    
-    #update keyword
+ 
+    # Update keyword
     with lock:
         KEYWORD = keyword
-    # Connect to RabbitMQ
-    
-    if connection is not None and connection.is_open:
-        connection.close()   
-    
-    connection = pika.BlockingConnection(pika.ConnectionParameters('rabbitmq'))
-    
+ 
+    # Properly close existing connection
+    if connection is not None:
+        try:
+            if connection.is_open:
+                connection.close()
+        except Exception as e:
+            print(f"Error closing connection: {e}")
+ 
+    # Properly stop existing channel
     if channel is not None:
-        channel.stop_consuming()
+        try:
+            if channel.is_open:
+                channel.stop_consuming()
+        except Exception as e:
+            print(f"Error stopping channel: {e}")
+ 
+    # Establish a new connection and channel
+    try:
+        connection = pika.BlockingConnection(pika.ConnectionParameters('rabbitmq'))
+        channel = connection.channel()
+ 
+        # Declare the queue
+        channel.queue_declare(queue='transcription_tasks', durable=True)
+ 
+        # Define the callback function
+        def callback(ch, method, properties, body):
+            print(f"Raw message received: {body}")
+            try:
+                message = body.decode('utf-8')
+                json_data = json.loads(message)
+                print(f"Received IPTV Object: {json_data}")
+                capture_and_transcribe_stream(json_data['live_url'])
+ 
+                # Acknowledge message processing
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+            except Exception as e:
+                print(f"Error in callback processing: {e}")
+ 
+        # Start consuming messages
+        channel.basic_qos(prefetch_count=1)  # Fair dispatch
+        channel.basic_consume(queue='transcription_tasks', on_message_callback=callback)
+        print("Waiting for transcription tasks...")
+        channel.start_consuming()
+ 
+    except Exception as e:
+        print(f"Error in start_consumer: {e}")
     
-    # Initialize channel if it's None
-    channel = connection.channel()
-    # Declare the same queue
-    channel.queue_declare(queue='transcription_tasks', durable=True)
-    
-    def callback(ch, method, properties, body):
-        # Extract IPTV URL from the RabbitMQ message
-       
-        print(f"Raw message received: {body}")
-
-        message = body.decode('utf-8')
-        #Parse th JSON object
-        
-        json_data = json.loads(message)
-
-        print(f"Received IPTV Object: {json_data}")
-
-        capture_and_transcribe_stream(json_data['live_url'])
-
-        # Acknowledge message processing
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-
-    # Listen for messages     
-    channel.basic_qos(prefetch_count=1)  # Fair dispatch
-    channel.basic_consume(queue='transcription_tasks', on_message_callback=callback)
-    print("Waiting for transcription tasks...")
-    channel.start_consuming()
     
     
 @app.route('/', methods=['GET', 'POST'])
